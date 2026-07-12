@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from app.routers import auth
 from app.database import engine, Base
+from app.routers import vehicles
 from app import models
 from app.routers import drivers
 from app.routers import maintenance
