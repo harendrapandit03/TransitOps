@@ -227,6 +227,7 @@ def complete_trip(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+   
     # RBAC
     if current_user.role != "Fleet Manager":
         raise HTTPException(
@@ -263,23 +264,101 @@ def complete_trip(
         .first()
     )
 
-    trip.actual_distance = data.actual_distance
+    if data.end_odometer < vehicle.odometer:
+        raise HTTPException(
+            status_code=400,
+            detail="End odometer cannot be less than current odometer."
+    )
+
+    trip.actual_distance = (
+        data.end_odometer - vehicle.odometer
+    )
+
     trip.fuel_consumed = data.fuel_consumed
     trip.status = "Completed"
 
-    vehicle.status = "Available"
     vehicle.odometer = data.end_odometer
+    vehicle.status = "Available"
 
     driver.status = "Available"
 
     fuel_log = FuelLog(
         vehicle_id=vehicle.id,
         liters=data.fuel_consumed,
-        cost=0
+        cost=data.fuel_cost
     )
 
     db.add(fuel_log)
 
+    db.commit()
+    db.refresh(trip)
+
+    return trip
+
+# CANCEL A TRIP
+@router.patch(
+    "/{trip_id}/cancel",
+    response_model=TripResponse
+)
+def cancel_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != "Fleet Manager":
+        raise HTTPException(
+            status_code=403,
+            detail="Only Fleet Managers can cancel trips."
+        )
+    trip = (
+        db.query(Trip)
+        .filter(Trip.id == trip_id)
+        .first()
+    )
+
+    if trip is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Trip not found."
+        )
+    if trip.status == "Completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Completed trips cannot be cancelled."
+        )
+
+    if trip.status == "Cancelled":
+        raise HTTPException(
+            status_code=400,
+            detail="Trip is already cancelled."
+        )
+    vehicle = (
+        db.query(Vehicle)
+        .filter(Vehicle.id == trip.vehicle_id)
+        .first()
+    )
+
+    driver = (
+        db.query(Driver)
+        .filter(Driver.id == trip.driver_id)
+        .first()
+    )
+    if vehicle is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Vehicle not found."
+        )
+
+    if driver is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Driver not found."
+        )
+    trip.status = "Cancelled"
+
+    vehicle.status = "Available"
+
+    driver.status = "Available"
     db.commit()
 
     db.refresh(trip)
