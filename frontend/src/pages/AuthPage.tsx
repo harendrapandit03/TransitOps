@@ -13,13 +13,14 @@ export const AuthPage: React.FC = () => {
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [locked, setLocked] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (user) {
     const from = (location.state as any)?.from?.pathname || '/';
     return <Navigate to={from} replace />;
   }
 
-  const handleSignIn = (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (locked) {
@@ -32,21 +33,25 @@ export const AuthPage: React.FC = () => {
       return;
     }
 
-    // Simple password validation for simulation (anything except correct passes)
-    if (password !== 'password123') {
+    setIsSubmitting(true);
+    try {
+      // Authenticates against the real backend. If the account doesn't
+      // exist yet, it's registered on the fly with the chosen role.
+      await login(email, password, role);
+      setFailedAttempts(0);
+      toast.success(`Successfully signed in as ${role}!`);
+    } catch (err: any) {
       const attempts = failedAttempts + 1;
       setFailedAttempts(attempts);
       if (attempts >= 5) {
         setLocked(true);
         toast.error('Account locked after 5 failed attempts.');
       } else {
-        toast.error(`Invalid credentials. ${5 - attempts} attempts remaining.`);
+        toast.error(err.message || `Invalid credentials. ${5 - attempts} attempts remaining.`);
       }
-      return;
+    } finally {
+      setIsSubmitting(false);
     }
-
-    login(email, role);
-    toast.success(`Successfully signed in as ${role}!`);
   };
 
   return (
@@ -192,12 +197,12 @@ export const AuthPage: React.FC = () => {
 
             <button
               type="submit"
-              disabled={locked}
+              disabled={locked || isSubmitting}
               className={`w-full py-3.5 rounded-lg font-bold text-white shadow-md transition transform active:scale-95 ${
-                locked ? 'bg-slate-400 cursor-not-allowed' : 'bg-[#eab308] hover:bg-yellow-600'
+                locked || isSubmitting ? 'bg-slate-400 cursor-not-allowed' : 'bg-[#eab308] hover:bg-yellow-600'
               }`}
             >
-              Sign In
+              {isSubmitting ? 'Signing in…' : 'Sign In'}
             </button>
           </form>
 

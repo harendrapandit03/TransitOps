@@ -8,6 +8,7 @@ from app.routers import reports
 from app.routers import trips
 from app.routers import maintenance
 from app.routers import fuels
+from app.routers import expenses
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -35,3 +36,4 @@ app.include_router(fuels.router)
 app.include_router(vehicles.router)
 app.include_router(reports.router)
 app.include_router(trips.router)
+app.include_router(expenses.router)

@@ -1,450 +1,420 @@
-import type { 
-  Vehicle, Driver, Trip, MaintenanceRecord, FuelLog, ExpenseRecord, User 
-} from './types';
-import { 
-  INITIAL_VEHICLES, INITIAL_DRIVERS, INITIAL_TRIPS, INITIAL_MAINTENANCE, INITIAL_FUEL_LOGS, INITIAL_EXPENSES 
-} from './mockData';
-
-// Local storage names
-const KEYS = {
-  VEHICLES: 'transitops_vehicles',
-  DRIVERS: 'transitops_drivers',
-  TRIPS: 'transitops_trips',
-  MAINTENANCE: 'transitops_maintenance',
-  FUEL_LOGS: 'transitops_fuel_logs',
-  EXPENSES: 'transitops_expenses',
-  AUTH: 'transitops_auth',
-};
-
-// Helper functions for localStorage
-const getStored = <T>(key: string, initial: T): T => {
-  const val = localStorage.getItem(key);
-  if (!val) {
-    localStorage.setItem(key, JSON.stringify(initial));
-    return initial;
-  }
-  try {
-    return JSON.parse(val) as T;
-  } catch {
-    return initial;
-  }
-};
-
-const setStored = <T>(key: string, data: T): void => {
-  localStorage.setItem(key, JSON.stringify(data));
-};
-
-// Initialize DB structure
-export const db = {
-  getVehicles: () => getStored<Vehicle[]>(KEYS.VEHICLES, INITIAL_VEHICLES),
-  saveVehicles: (data: Vehicle[]) => setStored(KEYS.VEHICLES, data),
-  
-  getDrivers: () => getStored<Driver[]>(KEYS.DRIVERS, INITIAL_DRIVERS),
-  saveDrivers: (data: Driver[]) => setStored(KEYS.DRIVERS, data),
-
-  getTrips: () => getStored<Trip[]>(KEYS.TRIPS, INITIAL_TRIPS),
-  saveTrips: (data: Trip[]) => setStored(KEYS.TRIPS, data),
-
-  getMaintenance: () => getStored<MaintenanceRecord[]>(KEYS.MAINTENANCE, INITIAL_MAINTENANCE),
-  saveMaintenance: (data: MaintenanceRecord[]) => setStored(KEYS.MAINTENANCE, data),
-
-  getFuelLogs: () => getStored<FuelLog[]>(KEYS.FUEL_LOGS, INITIAL_FUEL_LOGS),
-  saveFuelLogs: (data: FuelLog[]) => setStored(KEYS.FUEL_LOGS, data),
-
-  getExpenses: () => getStored<ExpenseRecord[]>(KEYS.EXPENSES, INITIAL_EXPENSES),
-  saveExpenses: (data: ExpenseRecord[]) => setStored(KEYS.EXPENSES, data),
-
-  getAuth: (): User | null => {
-    const val = localStorage.getItem(KEYS.AUTH);
-    return val ? JSON.parse(val) : null;
-  },
-  setAuth: (user: User | null) => {
-    if (user) {
-      localStorage.setItem(KEYS.AUTH, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(KEYS.AUTH);
-    }
-  }
-};
-
-// Main state logic implementing business rules
-export const api = {
-  // --- VEHICLES ---
-  getVehicles: async () => db.getVehicles(),
-  addVehicle: async (vehicle: Omit<Vehicle, 'id'>) => {
-    const list = db.getVehicles();
-    const exists = list.some(v => v.regNumber.toUpperCase() === vehicle.regNumber.toUpperCase());
-    if (exists) throw new Error(`Registration number ${vehicle.regNumber} already exists.`);
-    
-    const newVehicle: Vehicle = {
-      ...vehicle,
-      id: 'v_' + Date.now(),
-    };
-    list.push(newVehicle);
-    db.saveVehicles(list);
-    return newVehicle;
-  },
-  updateVehicle: async (vehicle: Vehicle) => {
-    const list = db.getVehicles();
-    const index = list.findIndex(v => v.id === vehicle.id);
-    if (index === -1) throw new Error('Vehicle not found.');
-    
-    // Check uniqueness excluding self
-    const duplicate = list.some(v => v.id !== vehicle.id && v.regNumber.toUpperCase() === vehicle.regNumber.toUpperCase());
-    if (duplicate) throw new Error(`Registration number ${vehicle.regNumber} already exists.`);
-    
-    list[index] = vehicle;
-    db.saveVehicles(list);
-    return vehicle;
-  },
-  deleteVehicle: async (id: string) => {
-    const list = db.getVehicles();
-    const updated = list.filter(v => v.id !== id);
-    db.saveVehicles(updated);
-  },
-
-  // --- DRIVERS ---
-  getDrivers: async () => db.getDrivers(),
-  addDriver: async (driver: Omit<Driver, 'id' | 'tripCount'>) => {
-    const list = db.getDrivers();
-    const newDriver: Driver = {
-      ...driver,
-      id: 'd_' + Date.now(),
-      tripCount: 0
-    };
-    list.push(newDriver);
-    db.saveDrivers(list);
-    return newDriver;
-  },
-  updateDriver: async (driver: Driver) => {
-    const list = db.getDrivers();
-    const index = list.findIndex(d => d.id === driver.id);
-    if (index === -1) throw new Error('Driver not found.');
-    list[index] = driver;
-    db.saveDrivers(list);
-    return driver;
-  },
-  deleteDriver: async (id: string) => {
-    const list = db.getDrivers();
-    const updated = list.filter(d => d.id !== id);
-    db.saveDrivers(updated);
-  },
-
-  // --- TRIPS ---
-  getTrips: async () => db.getTrips(),
-  createTrip: async (trip: Omit<Trip, 'id' | 'tripNumber' | 'createdAt'>) => {
-    const trips = db.getTrips();
-    const vehicles = db.getVehicles();
-    const drivers = db.getDrivers();
-
-    // Validations
-    if (trip.vehicleId) {
-      const v = vehicles.find(v => v.id === trip.vehicleId);
-      if (!v) throw new Error('Vehicle not found.');
-      if (v.status === 'Retired' || v.status === 'In Shop') {
-        throw new Error('Retired or In Shop vehicles cannot be assigned to trips.');
-      }
-      if (trip.status === 'Dispatched' && v.status === 'On Trip') {
-        throw new Error('Selected vehicle is already On Trip.');
-      }
-      if (trip.cargoWeight > v.maxLoad) {
-        throw new Error(`Cargo weight (${trip.cargoWeight} kg) exceeds vehicle's maximum load capacity (${v.maxLoad} kg).`);
-      }
-    }
-
-    if (trip.driverId) {
-      const d = drivers.find(d => d.id === trip.driverId);
-      if (!d) throw new Error('Driver not found.');
-      
-      // Expired license check
-      const expiry = new Date(d.licenseExpiry);
-      const today = new Date();
-      if (expiry < today) {
-        throw new Error(`Driver's license has expired (Expiry: ${d.licenseExpiry}). Cannot assign to trip.`);
-      }
-
-      if (d.status === 'Suspended') {
-        throw new Error('Suspended drivers cannot be assigned to trips.');
-      }
-      if (trip.status === 'Dispatched' && d.status === 'On Trip') {
-        throw new Error('Selected driver is already On Trip.');
-      }
-    }
-
-    const nextNum = 'TR' + String(trips.length + 1).padStart(3, '0');
-    const newTrip: Trip = {
-      ...trip,
-      id: 't_' + Date.now(),
-      tripNumber: nextNum,
-      createdAt: new Date().toISOString()
-    };
-
-    // If status is Dispatched, perform automatic status transition
-    if (newTrip.status === 'Dispatched') {
-      if (!newTrip.vehicleId || !newTrip.driverId) {
-        throw new Error('Both a vehicle and driver must be selected to dispatch a trip.');
-      }
-      // Update vehicle status
-      const updatedVehicles = vehicles.map(v => v.id === newTrip.vehicleId ? { ...v, status: 'On Trip' as const } : v);
-      db.saveVehicles(updatedVehicles);
-
-      // Update driver status
-      const updatedDrivers = drivers.map(d => d.id === newTrip.driverId ? { ...d, status: 'On Trip' as const, tripCount: d.tripCount + 1 } : d);
-      db.saveDrivers(updatedDrivers);
-    }
-
-    trips.push(newTrip);
-    db.saveTrips(trips);
-    return newTrip;
-  },
-
-  dispatchTrip: async (tripId: string) => {
-    const trips = db.getTrips();
-    const vehicles = db.getVehicles();
-    const drivers = db.getDrivers();
-    
-    const trip = trips.find(t => t.id === tripId);
-    if (!trip) throw new Error('Trip not found.');
-    if (trip.status !== 'Draft') throw new Error('Only draft trips can be dispatched.');
-    if (!trip.vehicleId || !trip.driverId) throw new Error('Vehicle and Driver must be assigned before dispatching.');
-
-    const v = vehicles.find(v => v.id === trip.vehicleId);
-    const d = drivers.find(d => d.id === trip.driverId);
-
-    if (!v || v.status === 'In Shop' || v.status === 'Retired' || v.status === 'On Trip') {
-      throw new Error('Assigned vehicle is unavailable or on another trip.');
-    }
-
-    if (!d || d.status === 'Suspended' || d.status === 'On Trip') {
-      throw new Error('Assigned driver is suspended, on another trip, or unavailable.');
-    }
-
-    // License expiry check
-    if (new Date(d.licenseExpiry) < new Date()) {
-      throw new Error('Driver license has expired.');
-    }
-
-    // Transition status
-    trip.status = 'Dispatched';
-    trip.eta = 'Calculating...';
-
-    const updatedVehicles = vehicles.map(vh => vh.id === v.id ? { ...vh, status: 'On Trip' as const } : vh);
-    db.saveVehicles(updatedVehicles);
-
-    const updatedDrivers = drivers.map(dr => dr.id === d.id ? { ...dr, status: 'On Trip' as const, tripCount: dr.tripCount + 1 } : dr);
-    db.saveDrivers(updatedDrivers);
-
-    db.saveTrips(trips);
-    return trip;
-  },
-
-  completeTrip: async (tripId: string, finalOdometer: number, fuelConsumed: number) => {
-    const trips = db.getTrips();
-    const vehicles = db.getVehicles();
-    const drivers = db.getDrivers();
-
-    const trip = trips.find(t => t.id === tripId);
-    if (!trip) throw new Error('Trip not found.');
-    if (trip.status !== 'Dispatched') throw new Error('Only dispatched trips can be completed.');
-
-    trip.status = 'Completed';
-    trip.finalOdometer = finalOdometer;
-    trip.fuelConsumed = fuelConsumed;
-    trip.eta = '-';
-
-    // Transition vehicle and driver back to Available
-    if (trip.vehicleId) {
-      const updatedVehicles = vehicles.map(v => {
-        if (v.id === trip.vehicleId) {
-          if (finalOdometer < v.odometer) {
-            throw new Error(`Final odometer (${finalOdometer}) cannot be less than previous odometer (${v.odometer}).`);
-          }
-          return { ...v, status: 'Available' as const, odometer: finalOdometer };
-        }
-        return v;
-      });
-      db.saveVehicles(updatedVehicles);
-
-      // Save a fuel log automatically
-      if (fuelConsumed > 0) {
-        const fuelLogs = db.getFuelLogs();
-        fuelLogs.push({
-          id: 'f_' + Date.now(),
-          vehicleId: trip.vehicleId,
-          liters: fuelConsumed,
-          cost: fuelConsumed * 100, // assume cost factor
-          date: new Date().toISOString().split('T')[0]
-        });
-        db.saveFuelLogs(fuelLogs);
-      }
-    }
-
-    if (trip.driverId) {
-      const updatedDrivers = drivers.map(d => d.id === trip.driverId ? { ...d, status: 'Available' as const } : d);
-      db.saveDrivers(updatedDrivers);
-    }
-
-    db.saveTrips(trips);
-    return trip;
-  },
-
-  cancelTrip: async (tripId: string) => {
-    const trips = db.getTrips();
-    const vehicles = db.getVehicles();
-    const drivers = db.getDrivers();
-
-    const trip = trips.find(t => t.id === tripId);
-    if (!trip) throw new Error('Trip not found.');
-
-    const wasDispatched = trip.status === 'Dispatched';
-    trip.status = 'Cancelled';
-    trip.eta = '-';
-
-    if (wasDispatched) {
-      // Revert vehicle and driver to Available
-      if (trip.vehicleId) {
-        const updatedVehicles = vehicles.map(v => v.id === trip.vehicleId ? { ...v, status: 'Available' as const } : v);
-        db.saveVehicles(updatedVehicles);
-      }
-      if (trip.driverId) {
-        const updatedDrivers = drivers.map(d => d.id === trip.driverId ? { ...d, status: 'Available' as const } : d);
-        db.saveDrivers(updatedDrivers);
-      }
-    }
-
-    db.saveTrips(trips);
-    return trip;
-  },
-
-  // --- MAINTENANCE ---
-  getMaintenance: async () => db.getMaintenance(),
-  createMaintenance: async (record: Omit<MaintenanceRecord, 'id' | 'status' | 'startDate'>) => {
-    const records = db.getMaintenance();
-    const vehicles = db.getVehicles();
-
-    const vehicle = vehicles.find(v => v.id === record.vehicleId);
-    if (!vehicle) throw new Error('Vehicle not found.');
-
-    const newRecord: MaintenanceRecord = {
-      ...record,
-      id: 'm_' + Date.now(),
-      status: 'Active',
-      startDate: new Date().toISOString().split('T')[0]
-    };
-
-    // Update vehicle status to 'In Shop' automatically
-    const updatedVehicles = vehicles.map(v => v.id === record.vehicleId ? { ...v, status: 'In Shop' as const } : v);
-    db.saveVehicles(updatedVehicles);
-
-    records.push(newRecord);
-    db.saveMaintenance(records);
-
-    // Also auto-record a maintenance expense
-    const expenses = db.getExpenses();
-    expenses.push({
-      id: 'e_' + Date.now(),
-      vehicleId: record.vehicleId,
-      amount: record.cost,
-      category: 'Maintenance',
-      description: `Maintenance: ${record.description}`,
-      date: new Date().toISOString().split('T')[0]
-    });
-    db.saveExpenses(expenses);
-
-    return newRecord;
-  },
-
-  closeMaintenance: async (recordId: string) => {
-    const records = db.getMaintenance();
-    const vehicles = db.getVehicles();
-
-    const record = records.find(r => r.id === recordId);
-    if (!record) throw new Error('Record not found.');
-
-    record.status = 'Closed';
-    record.endDate = new Date().toISOString().split('T')[0];
-
-    // Restore vehicle to Available (unless retired)
-    const vehicle = vehicles.find(v => v.id === record.vehicleId);
-    if (vehicle && vehicle.status !== 'Retired') {
-      const updatedVehicles = vehicles.map(v => v.id === record.vehicleId ? { ...v, status: 'Available' as const } : v);
-      db.saveVehicles(updatedVehicles);
-    }
-
-    db.saveMaintenance(records);
-    return record;
-  },
-
-  // --- FUEL & EXPENSES ---
-  getFuelLogs: async () => db.getFuelLogs(),
-  addFuelLog: async (log: Omit<FuelLog, 'id'>) => {
-    const logs = db.getFuelLogs();
-    const newLog = {
-      ...log,
-      id: 'fl_' + Date.now()
-    };
-    logs.push(newLog);
-    db.saveFuelLogs(logs);
-    return newLog;
-  },
-
-  getExpenses: async () => db.getExpenses(),
-  addExpense: async (expense: Omit<ExpenseRecord, 'id'>) => {
-    const list = db.getExpenses();
-    const newExpense = {
-      ...expense,
-      id: 'ex_' + Date.now()
-    };
-    list.push(newExpense);
-    db.saveExpenses(list);
-    return newExpense;
-  }
-};
-
-// Generic Axios wrapper that maps to our local implementation to simulate network and fulfill requirements
 import axios from 'axios';
+import type {
+  Vehicle, Driver, Trip, MaintenanceRecord, FuelLog, ExpenseRecord, User
+} from './types';
 
+// ---------------------------------------------------------------------------
+// HTTP client — talks to the FastAPI backend (see app/main.py).
+// Base URL comes from VITE_API_URL (see frontend/.env), defaulting to the
+// backend's local dev address.
+// ---------------------------------------------------------------------------
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'https://api.transitops.io',
+  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Interceptor to supply user authorization simulation
+// Attach the real JWT issued by POST /auth/login, if we have one.
 client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('transitops_token') || 'mock-jwt-token-xyz';
+  const token = localStorage.getItem('transitops_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-// Reusable API service functions for Axios & File Upload
+// Turns an Axios/FastAPI error into a plain Error with the backend's message
+// (FastAPI returns validation/business errors as { detail: string }).
+const asError = (err: any): Error => {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string') return new Error(detail);
+  if (Array.isArray(detail) && detail[0]?.msg) return new Error(detail[0].msg);
+  return new Error(err?.message || 'Something went wrong talking to the server.');
+};
+
+// GET requests degrade gracefully (return an empty list + console warning)
+// instead of throwing, so a page doesn't hard-crash if the backend is
+// briefly unreachable. Mutating requests (POST/PUT/PATCH/DELETE) always
+// throw so the calling page's try/catch + toast can surface the real error.
+const safeGet = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+  try {
+    return await fn();
+  } catch (err) {
+    console.warn('TransitOps API request failed:', err);
+    return fallback;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Local session cache (the logged-in user + a couple of purely cosmetic
+// fields the backend doesn't model, like a vehicle's "region").
+// ---------------------------------------------------------------------------
+const AUTH_KEY = 'transitops_auth';
+const REGION_KEY = 'transitops_vehicle_regions';
+
+const getRegionMap = (): Record<string, string> => {
+  try {
+    return JSON.parse(localStorage.getItem(REGION_KEY) || '{}');
+  } catch {
+    return {};
+  }
+};
+
+const setRegion = (id: string, region?: string) => {
+  const map = getRegionMap();
+  if (region) map[id] = region; else delete map[id];
+  localStorage.setItem(REGION_KEY, JSON.stringify(map));
+};
+
+export const db = {
+  getAuth: (): User | null => {
+    const val = localStorage.getItem(AUTH_KEY);
+    return val ? JSON.parse(val) : null;
+  },
+  setAuth: (user: User | null) => {
+    if (user) {
+      localStorage.setItem(AUTH_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(AUTH_KEY);
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Adapters: backend (snake_case, per app/schemas.py) <-> frontend types
+// (camelCase, per services/types.ts)
+// ---------------------------------------------------------------------------
+const vehicleFromApi = (v: any): Vehicle => ({
+  id: String(v.id),
+  regNumber: v.registration_number,
+  name: v.vehicle_name,
+  type: v.vehicle_type,
+  maxLoad: v.max_load_capacity,
+  odometer: v.odometer,
+  acquisitionCost: v.acquisition_cost,
+  status: v.status,
+  region: getRegionMap()[String(v.id)],
+});
+
+const driverFromApi = (d: any, tripCount = 0): Driver => ({
+  id: String(d.id),
+  name: d.name,
+  licenseNumber: d.license_number,
+  licenseCategory: d.license_category,
+  licenseExpiry: typeof d.license_expiry === 'string' ? d.license_expiry : String(d.license_expiry),
+  contactNumber: d.contact_number,
+  safetyScore: d.safety_score,
+  status: d.status,
+  tripCount,
+});
+
+const tripFromApi = (t: any): Trip => ({
+  id: String(t.id),
+  tripNumber: 'TR' + String(t.id).padStart(3, '0'),
+  source: t.source,
+  destination: t.destination,
+  vehicleId: t.vehicle_id != null ? String(t.vehicle_id) : undefined,
+  driverId: t.driver_id != null ? String(t.driver_id) : undefined,
+  cargoWeight: t.cargo_weight,
+  distance: t.planned_distance,
+  status: t.status,
+  eta: t.status === 'Dispatched' ? 'Calculating...' : '-',
+  finalOdometer: undefined,
+  fuelConsumed: t.fuel_consumed ?? undefined,
+  createdAt: t.created_at,
+});
+
+const maintenanceFromApi = (m: any): MaintenanceRecord => ({
+  id: String(m.id),
+  vehicleId: String(m.vehicle_id),
+  description: m.description || m.issue,
+  startDate: String(m.opened_at).split('T')[0],
+  endDate: m.closed_at ? String(m.closed_at).split('T')[0] : undefined,
+  cost: m.cost,
+  status: m.status === 'Active' ? 'Active' : 'Closed',
+});
+
+const fuelLogFromApi = (f: any): FuelLog => ({
+  id: String(f.id),
+  vehicleId: String(f.vehicle_id),
+  liters: f.liters,
+  cost: f.cost,
+  date: String(f.date).split('T')[0],
+});
+
+const expenseFromApi = (e: any): ExpenseRecord => ({
+  id: String(e.id),
+  vehicleId: String(e.vehicle_id),
+  amount: e.amount,
+  category: (e.expense_type as ExpenseRecord['category']) || 'Other',
+  description: e.description || '',
+  date: String(e.date).split('T')[0],
+});
+
+// ---------------------------------------------------------------------------
+// Main API — same public interface the pages already call, now backed by
+// real HTTP requests to the FastAPI service instead of localStorage.
+// ---------------------------------------------------------------------------
+export const api = {
+  // --- VEHICLES ---
+  getVehicles: async (): Promise<Vehicle[]> =>
+    safeGet(async () => {
+      const res = await client.get('/vehicles/');
+      return res.data.map(vehicleFromApi);
+    }, []),
+
+  addVehicle: async (vehicle: Omit<Vehicle, 'id'>): Promise<Vehicle> => {
+    try {
+      const res = await client.post('/vehicles/', {
+        registration_number: vehicle.regNumber,
+        vehicle_name: vehicle.name,
+        vehicle_type: vehicle.type,
+        max_load_capacity: vehicle.maxLoad,
+        odometer: vehicle.odometer,
+        acquisition_cost: vehicle.acquisitionCost,
+      });
+      if (vehicle.region) setRegion(String(res.data.id), vehicle.region);
+      return vehicleFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  updateVehicle: async (vehicle: Vehicle): Promise<Vehicle> => {
+    try {
+      const res = await client.put(`/vehicles/${vehicle.id}`, {
+        registration_number: vehicle.regNumber,
+        vehicle_name: vehicle.name,
+        vehicle_type: vehicle.type,
+        max_load_capacity: vehicle.maxLoad,
+        odometer: vehicle.odometer,
+        acquisition_cost: vehicle.acquisitionCost,
+        status: vehicle.status,
+      });
+      setRegion(vehicle.id, vehicle.region);
+      return vehicleFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  deleteVehicle: async (id: string): Promise<void> => {
+    try {
+      await client.delete(`/vehicles/${id}`);
+      setRegion(id, undefined);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  // --- DRIVERS ---
+  getDrivers: async (): Promise<Driver[]> =>
+    safeGet(async () => {
+      const [driversRes, trips] = await Promise.all([
+        client.get('/drivers/'),
+        api.getTrips(),
+      ]);
+      return driversRes.data.map((d: any) => {
+        const tripCount = trips.filter(t => t.driverId === String(d.id) && t.status !== 'Draft').length;
+        return driverFromApi(d, tripCount);
+      });
+    }, []),
+
+  addDriver: async (driver: Omit<Driver, 'id' | 'tripCount'>): Promise<Driver> => {
+    try {
+      const res = await client.post('/drivers/', {
+        name: driver.name,
+        license_number: driver.licenseNumber,
+        license_category: driver.licenseCategory,
+        license_expiry: driver.licenseExpiry,
+        contact_number: driver.contactNumber,
+      });
+      return driverFromApi(res.data, 0);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  updateDriver: async (driver: Driver): Promise<Driver> => {
+    try {
+      const res = await client.put(`/drivers/${driver.id}`, {
+        name: driver.name,
+        license_category: driver.licenseCategory,
+        license_expiry: driver.licenseExpiry,
+        contact_number: driver.contactNumber,
+        safety_score: driver.safetyScore,
+        status: driver.status,
+      });
+      return driverFromApi(res.data, driver.tripCount);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  deleteDriver: async (id: string): Promise<void> => {
+    try {
+      await client.delete(`/drivers/${id}`);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  // --- TRIPS ---
+  getTrips: async (): Promise<Trip[]> =>
+    safeGet(async () => {
+      const res = await client.get('/trips/');
+      return res.data.map(tripFromApi);
+    }, []),
+
+  createTrip: async (trip: Omit<Trip, 'id' | 'tripNumber' | 'createdAt'>): Promise<Trip> => {
+    try {
+      if (!trip.vehicleId || !trip.driverId) {
+        throw new Error('Both a vehicle and driver must be selected to create a trip.');
+      }
+      const res = await client.post('/trips/', {
+        vehicle_id: Number(trip.vehicleId),
+        driver_id: Number(trip.driverId),
+        source: trip.source,
+        destination: trip.destination,
+        cargo_weight: trip.cargoWeight,
+        planned_distance: trip.distance,
+      });
+      // The backend always creates trips as "Draft"; dispatch immediately
+      // if the user asked to create it as already-dispatched.
+      if (trip.status === 'Dispatched') {
+        const dispatched = await client.patch(`/trips/${res.data.id}/dispatch`);
+        return tripFromApi(dispatched.data);
+      }
+      return tripFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  dispatchTrip: async (tripId: string): Promise<Trip> => {
+    try {
+      const res = await client.patch(`/trips/${tripId}/dispatch`);
+      return tripFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  completeTrip: async (tripId: string, finalOdometer: number, fuelConsumed: number): Promise<Trip> => {
+    try {
+      const res = await client.patch(`/trips/${tripId}/complete`, {
+        end_odometer: finalOdometer,
+        fuel_consumed: fuelConsumed,
+        fuel_cost: fuelConsumed * 100, // cost factor assumption, mirrors backend's fuel-log pricing
+      });
+      return tripFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  cancelTrip: async (tripId: string): Promise<Trip> => {
+    try {
+      const res = await client.patch(`/trips/${tripId}/cancel`);
+      return tripFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  // --- MAINTENANCE ---
+  getMaintenance: async (): Promise<MaintenanceRecord[]> =>
+    safeGet(async () => {
+      const res = await client.get('/maintenance/');
+      return res.data.map(maintenanceFromApi);
+    }, []),
+
+  createMaintenance: async (record: Omit<MaintenanceRecord, 'id' | 'status' | 'startDate'>): Promise<MaintenanceRecord> => {
+    try {
+      const res = await client.post('/maintenance/', {
+        vehicle_id: Number(record.vehicleId),
+        issue: record.description,
+        description: record.description,
+        cost: record.cost,
+      });
+      return maintenanceFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  closeMaintenance: async (recordId: string): Promise<MaintenanceRecord> => {
+    try {
+      const res = await client.put(`/maintenance/${recordId}`, { status: 'Completed' });
+      return maintenanceFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  // --- FUEL & EXPENSES ---
+  getFuelLogs: async (): Promise<FuelLog[]> =>
+    safeGet(async () => {
+      const res = await client.get('/fuel/');
+      return res.data.map(fuelLogFromApi);
+    }, []),
+
+  addFuelLog: async (log: Omit<FuelLog, 'id'>): Promise<FuelLog> => {
+    try {
+      const res = await client.post('/fuel/', {
+        vehicle_id: Number(log.vehicleId),
+        liters: log.liters,
+        cost: log.cost,
+      });
+      return fuelLogFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+
+  getExpenses: async (): Promise<ExpenseRecord[]> =>
+    safeGet(async () => {
+      const res = await client.get('/expenses/');
+      return res.data.map(expenseFromApi);
+    }, []),
+
+  addExpense: async (expense: Omit<ExpenseRecord, 'id'>): Promise<ExpenseRecord> => {
+    try {
+      const res = await client.post('/expenses/', {
+        vehicle_id: Number(expense.vehicleId),
+        expense_type: expense.category,
+        amount: expense.amount,
+        description: expense.description,
+      });
+      return expenseFromApi(res.data);
+    } catch (err) {
+      throw asError(err);
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Document upload + a couple of raw fetch helpers some pages use directly.
+// ---------------------------------------------------------------------------
 export const apiService = {
-  // Simulates document upload using multipart/form-data with actual Axios configurations
+  // The backend doesn't currently expose a document-upload endpoint, so this
+  // falls back to a mock response if the request fails (e.g. 404), keeping
+  // the vehicle registry flow usable end-to-end.
   uploadDocument: async (file: File, entityType: 'vehicle' | 'driver', entityId: string) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('entityType', entityType);
     formData.append('entityId', entityId);
 
-    // Call the endpoint using Axios (will fail or return mock success gracefully)
     try {
       const response = await client.post('/api/v1/documents/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-        onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
-          console.log(`Upload progress: ${percentCompleted}%`);
-        }
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
       return response.data;
     } catch (error) {
-      console.warn('Axios backend upload error (using offline mock response instead):', error);
-      // Fallback mock response for offline/sandbox mode to keep user happy
-      await new Promise((resolve) => setTimeout(resolve, 800)); // Simulate latency
+      console.warn('Document upload endpoint unavailable, using local mock response:', error);
+      await new Promise((resolve) => setTimeout(resolve, 800));
       return {
         status: 'success',
         filename: file.name,
@@ -454,33 +424,9 @@ export const apiService = {
     }
   },
 
-  // Axios-based mock endpoints to interact with FastAPI simulation
-  fetchVehicles: async () => {
-    try {
-      const res = await client.get('/api/v1/vehicles');
-      return res.data;
-    } catch {
-      return db.getVehicles();
-    }
-  },
-
-  fetchDrivers: async () => {
-    try {
-      const res = await client.get('/api/v1/drivers');
-      return res.data;
-    } catch {
-      return db.getDrivers();
-    }
-  },
-
-  fetchTrips: async () => {
-    try {
-      const res = await client.get('/api/v1/trips');
-      return res.data;
-    } catch {
-      return db.getTrips();
-    }
-  }
+  fetchVehicles: async () => (await client.get('/vehicles/')).data,
+  fetchDrivers: async () => (await client.get('/drivers/')).data,
+  fetchTrips: async () => (await client.get('/trips/')).data,
 };
 
 export { client };

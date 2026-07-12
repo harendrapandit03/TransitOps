@@ -130,6 +130,11 @@ def update_vehicle(
     for key, value in update_data.items():
         setattr(vehicle, key, value)
 
+    db.commit()
+    db.refresh(vehicle)
+
+    return vehicle
+
 # DELETE VEHICLE
 @router.delete(
     "/{vehicle_id}"
