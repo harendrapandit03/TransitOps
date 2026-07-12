@@ -6,7 +6,6 @@ __pycache__/
 *.py[cod]
 
 # Environment Variables
-.env
 
 # Database
 *.db
