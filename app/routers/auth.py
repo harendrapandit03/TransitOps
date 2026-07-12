@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user
 from app.models import User
-from app.schemas import UserRegister, UserLogin, UserResponse
+from app.schemas import UserCreate, UserLogin, UserResponse
 from app.auth import (
     hash_password,
     verify_password,
@@ -22,7 +22,7 @@ router = APIRouter(
     status_code=status.HTTP_201_CREATED
 )
 def register(
-    user: UserRegister,
+    user: UserCreate,
     db: Session = Depends(get_db)
 ):
 
