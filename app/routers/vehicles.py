@@ -25,6 +25,11 @@ def create_vehicle(
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user)
     ):
+            if current_user.role != "Fleet Manager":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only Fleet Managers can manage vehicles."
+                )
             existing_vehicle = (
             db.query(Vehicle)
             .filter(
@@ -104,6 +109,11 @@ def update_vehicle(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if current_user.role != "Fleet Manager":
+        raise HTTPException(
+            status_code=403,
+            detail="Only Fleet Managers can manage vehicles."
+        )
     vehicle = (
         db.query(Vehicle)
         .filter(Vehicle.id == vehicle_id)
@@ -129,6 +139,12 @@ def delete_vehicle(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if current_user.role != "Fleet Manager":
+        raise HTTPException(
+            status_code=403,
+            detail="Only Fleet Managers can manage vehicles."
+        )
+    
     vehicle = (
         db.query(Vehicle)
         .filter(Vehicle.id == vehicle_id)
