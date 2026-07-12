@@ -134,7 +134,10 @@ class TripResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-
+class CompleteTrip(BaseModel):
+    actual_distance: float
+    fuel_consumed: float
+    end_odometer: float
 
 # MAINTENANCE SCHEMAS
 
@@ -205,3 +208,4 @@ class ExpenseResponse(BaseModel):
     date: datetime
 
     model_config = ConfigDict(from_attributes=True)
+    
